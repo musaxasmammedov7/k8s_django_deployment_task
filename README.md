@@ -1,6 +1,6 @@
 # Kubernetes & Helm Deployment for Django Application on AWS (EKS + RDS)
 
-This repository contains a production-grade **Kubernetes** and **Helm / Helmfile** deployment solution for the [Healthchecks Django Application](https://github.com/musaxasmammedov7/django-sample-app-ecs-fargate) running on **Amazon EKS (Elastic Kubernetes Service)** and backed by **Amazon RDS for PostgreSQL**.
+This repository contains a production-grade **Kubernetes** and **Helm / Helmfile** deployment solution for the **Healthchecks Django Application** (upstream: [`kaaalim/django-sample-app`](https://github.com/kaaalim/django-sample-app.git), containerized fork: [`musaxasmammedov7/django-sample-app-ecs-fargate`](https://github.com/musaxasmammedov7/django-sample-app-ecs-fargate)) running on **Amazon EKS (Elastic Kubernetes Service)** and backed by **Amazon RDS for PostgreSQL**.
 
 ---
 
