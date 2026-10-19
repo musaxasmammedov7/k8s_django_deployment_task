@@ -1,0 +1,120 @@
+# =============================================================================
+# Default values for django-app Helm Chart
+# =============================================================================
+
+replicaCount: 2
+
+image:
+  repository: "669707688683.dkr.ecr.eu-north-1.amazonaws.com/django-sample-app"
+  tag: "latest"
+  pullPolicy: Always
+
+nameOverride: ""
+fullnameOverride: "django-app"
+
+# Container port (Task requirement: Operates on port 8080)
+containerPort: 8080
+
+# Gunicorn command arguments to bind to port 8080
+args:
+  - "gunicorn"
+  - "hc.wsgi:application"
+  - "--bind"
+  - "0.0.0.0:8080"
+  - "--workers"
+  - "3"
+  - "--threads"
+  - "2"
+  - "--timeout"
+  - "60"
+  - "--access-logfile"
+  - "-"
+  - "--error-logfile"
+  - "-"
+
+# Non-sensitive environment variables injected via ConfigMap
+config:
+  DB: "postgres"
+  DB_HOST: "django-k8s-postgres.czmm644g0ujf.eu-north-1.rds.amazonaws.com"
+  DB_PORT: "5432"
+  DB_NAME: "hc"
+  DB_USER: "hc"
+  DB_SSLMODE: "require"
+  DEBUG: "False"
+  ALLOWED_HOSTS: "*"
+  SITE_ROOT: "https://django.k8s.example.com"
+  WAIT_FOR_DB: "true"
+  RUN_MIGRATIONS: "true"
+  PORT: "8080"
+  HOME: "/tmp"
+
+# Sensitive environment variables injected via Secret
+# NOTE: Production values are encrypted in secrets.values.yaml using SOPS + AWS KMS (helm-secrets)
+secrets:
+  SECRET_KEY: "placeholder-overridden-by-helm-secrets"
+  DB_PASSWORD: "placeholder-overridden-by-helm-secrets"
+
+# Service configuration (Task requirement: Service of type ClusterIP on port 8080)
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+# Liveness and Readiness Probes on port 8080
+probes:
+  liveness:
+    path: /api/v3/status/
+    port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: /api/v3/status/
+    port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# Resource requests & limits (Required by HPA to compute CPU & RAM utilization %)
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# HorizontalPodAutoscaler (Task requirement: scale 2 to 4 replicas at 80% CPU or RAM)
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Ingress & Let's Encrypt Cert-Manager Configuration for AWS
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: django-app-tls
+      hosts:
+        - django.k8s.musaxasmammedov.dev
+
+# Cert-Manager ClusterIssuer for Let's Encrypt ACME HTTP-01
+certManager:
+  createClusterIssuer: true
+  issuerName: "letsencrypt-prod"
+  email: "musaxasmammedov7@gmail.com"
+  server: "https://acme-v02.api.letsencrypt.org/directory"

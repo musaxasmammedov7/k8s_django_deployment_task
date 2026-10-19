@@ -1,0 +1,25 @@
+# Terraform state and local provider binaries
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# helm-secrets temporary decrypted files
+*.dec
+*.dec.yaml
+*secrets.dec.yaml
+
+# OS / Editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
