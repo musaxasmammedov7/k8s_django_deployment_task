@@ -1,0 +1,13 @@
+{{- if .Values.storage.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storage.storageClassName }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+provisioner: {{ .Values.storage.provisioner }}
+volumeBindingMode: {{ .Values.storage.volumeBindingMode }}
+reclaimPolicy: {{ .Values.storage.reclaimPolicy }}
+{{- end }}

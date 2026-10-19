@@ -118,3 +118,15 @@ certManager:
   issuerName: "letsencrypt-prod"
   email: "musaxasmammedov7@gmail.com"
   server: "https://acme-v02.api.letsencrypt.org/directory"
+
+# Persistent Storage (StorageClass, PV, PVC) for Django Static Files (/app/static-collected)
+storage:
+  enabled: true
+  storageClassName: "django-static-sc"
+  provisioner: "kubernetes.io/no-provisioner"
+  volumeBindingMode: "Immediate"
+  reclaimPolicy: "Retain"
+  size: "2Gi"
+  accessMode: "ReadWriteMany"
+  hostPath: "/mnt/data/django-static"
+  mountPath: "/app/static-collected"

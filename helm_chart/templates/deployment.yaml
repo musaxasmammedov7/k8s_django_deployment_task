@@ -21,6 +21,25 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      {{- if .Values.storage.enabled }}
+      initContainers:
+        - name: init-static-files
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              echo "Populating persistent volume with pre-collected static assets..."
+              cp -rn /app/static-collected/. /mnt/static-collected/
+              chown -R 1000:1000 /mnt/static-collected
+              echo "Static files synced to Persistent Volume successfully."
+          volumeMounts:
+            - name: static-storage
+              mountPath: /mnt/static-collected
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -36,6 +55,11 @@ spec:
                 name: {{ .Values.fullnameOverride | default .Release.Name }}-config
             - secretRef:
                 name: {{ .Values.fullnameOverride | default .Release.Name }}-secret
+          {{- if .Values.storage.enabled }}
+          volumeMounts:
+            - name: static-storage
+              mountPath: {{ .Values.storage.mountPath }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
@@ -54,3 +78,9 @@ spec:
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.storage.enabled }}
+      volumes:
+        - name: static-storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.fullnameOverride | default .Release.Name }}-static-pvc
+      {{- end }}

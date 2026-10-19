@@ -24,6 +24,9 @@
 | **Ingress & Ingress Controller** | `networking.k8s.io/v1` | Provisions an internet-facing **AWS Network Load Balancer (NLB)** via `ingress-nginx` and routes external HTTP/HTTPS requests to the internal `ClusterIP` Service. |
 | **Cert-Manager (`ClusterIssuer`)** | `cert-manager.io/v1` | Automates obtaining and renewing free TLS certificates from **Let's Encrypt** using the ACME HTTP-01 solver and stores the certificate in a Kubernetes TLS Secret (`django-app-tls`). |
 | **HorizontalPodAutoscaler (`HPA`)** | `autoscaling/v2` | Queries `metrics-server` for real-time CPU and RAM usage and automatically scales the Django Deployment between **2 and 4 replicas** when CPU or Memory utilization hits **80%**. |
+| **StorageClass** | `storage.k8s.io/v1` | Defines the class/tier of storage (`django-static-sc`), its provisioner, volume binding mode (`Immediate`), and reclaim policy (`Retain`). |
+| **PersistentVolume (`PV`)** | `v1` | A cluster-wide piece of storage (`django-app-static-pv`, `2Gi`) provisioned to persist data beyond the lifecycle of any individual pod. |
+| **PersistentVolumeClaim (`PVC`)** | `v1` | A namespaced request for storage (`django-app-static-pvc`) by a user/pod that binds to a matching `PersistentVolume` and mounts into the Django pods at `/app/static-collected`. |
 
 ### 1.2 Helm & Helmfile Functionalities
 
@@ -145,6 +148,32 @@ Uses `autoscaling/v2` to scale `Deployment/django-app`:
   - `cpu` -> `averageUtilization: 80` (80%)
   - `memory` -> `averageUtilization: 80` (80%)
 
+### 3.7 Persistent Storage for Static Files (`storage-class.yaml`, `pv.yaml`, `pvc.yaml`)
+
+#### Understanding PV, PVC, and StorageClass in Kubernetes
+1. **PersistentVolume (`PV`)**:
+   - A `PersistentVolume` is a **cluster-level storage resource** (not scoped to a single namespace) representing an actual piece of underlying storage (such as an AWS EBS volume, Amazon EFS filesystem, NFS share, or node disk `hostPath`).
+   - Unlike ephemeral container filesystems that are wiped whenever a pod restarts or is rescheduled, a `PV` has an independent lifecycle decoupled from pods.
+2. **PersistentVolumeClaim (`PVC`)**:
+   - A `PersistentVolumeClaim` is a **namespaced request for storage** made by a developer or application pod.
+   - Just as a `Pod` consumes node CPU/RAM resources, a `PVC` consumes `PV` storage resources by specifying the required size (`2Gi`), access mode (`ReadWriteMany` / `ReadWriteOnce`), and `storageClassName`.
+3. **StorageClass (`SC`)**:
+   - A `StorageClass` defines the **"class" or profile of storage** (e.g., SSD vs HDD, provisioner type, `reclaimPolicy: Retain | Delete`, and `volumeBindingMode: Immediate | WaitForFirstConsumer`).
+   - It acts as the contract matching a `PVC` to an appropriate `PV` (in static provisioning) or dynamically creating the underlying cloud disk on demand (in dynamic provisioning).
+
+#### How PV, PVC, and StorageClass Work Together (Lifecycle)
+```mermaid
+flowchart LR
+    SC["StorageClass\n(django-static-sc)"] -->|1. Matches Class & Policy| PV["PersistentVolume\n(django-app-static-pv, 2Gi)"]
+    PVC["PersistentVolumeClaim\n(django-app-static-pvc, 2Gi)"] -->|2. Binds 1:1| PV
+    Pod["Django Pods (x2)\ninitContainer + gunicorn"] -->|3. Mounts PVC at\n/app/static-collected| PVC
+```
+1. **Provisioning**: Either an administrator/Helm chart creates a `PV` explicitly (**Static Provisioning** via `pv.yaml` associated with `storage-class.yaml`), or the `StorageClass` CSI driver creates the volume automatically (**Dynamic Provisioning**).
+2. **Binding**: The Kubernetes control plane controller loop watches for new `PVC` objects (`django-app-static-pvc`) and binds them 1-to-1 to a matching `PV` (`django-app-static-pv`) with compatible `storageClassName`, `accessModes`, and sufficient `capacity`. Both transition to `STATUS: Bound`.
+3. **Using (Mounting in Pods)**: In `deployment.yaml`, pods declare a `volume` referencing `claimName: django-app-static-pvc` and mount it into the container at `/app/static-collected`.
+   - **Important Implementation Detail (`initContainer`)**: Because mounting a fresh volume over `/app/static-collected` would otherwise hide the static assets compiled during `docker build`, our `deployment.yaml` runs an `initContainer` (`init-static-files`) that copies `/app/static-collected/.` onto the Persistent Volume and sets ownership (`chown -R 1000:1000`) before the main Gunicorn container starts.
+4. **Reclaiming**: When a `PVC` is deleted, the `reclaimPolicy: Retain` on `django-static-sc` and `django-app-static-pv` ensures that the underlying static files are preserved rather than wiped.
+
 ---
 
 ## Step 4: Orchestrating the Full Environment with Helmfile
@@ -204,6 +233,31 @@ clusterissuer.cert-manager.io/letsencrypt-prod   True    97s
 
 NAMESPACE    NAME                                         READY   SECRET           AGE
 django-app   certificate.cert-manager.io/django-app-tls   False   django-app-tls   97s
+```
+
+#### Persistent Storage (`StorageClass`, `PV`, `PVC`) & Static Files Mount Verification
+```text
+$ kubectl get sc,pv,pvc -n django-app -o wide
+NAME                                           PROVISIONER                    RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+storageclass.storage.k8s.io/django-static-sc   kubernetes.io/no-provisioner   Retain          Immediate              false                  52s
+
+NAME                                    CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                              STORAGECLASS       AGE
+persistentvolume/django-app-static-pv   2Gi        RWX            Retain           Bound    django-app/django-app-static-pvc   django-static-sc   52s
+
+NAME                                          STATUS   VOLUME                 CAPACITY   ACCESS MODES   STORAGECLASS       AGE
+persistentvolumeclaim/django-app-static-pvc   Bound    django-app-static-pv   2Gi        RWX            django-static-sc   53s
+
+$ kubectl exec -n django-app deploy/django-app -- ls -la /app/static-collected
+Defaulted container "django-app" out of: django-app, init-static-files (init)
+total 48
+drwxr-xr-x. 8 app app    77 Oct 19 12:27 .
+drwxr-xr-x. 1 app app    30 Oct 19 11:30 ..
+drwxr-xr-x. 4 app app    48 Oct 19 12:27 CACHE
+drwxr-xr-x. 5 app app    38 Oct 19 12:27 admin
+drwxr-xr-x. 3 app app 16384 Oct 19 12:27 css
+drwxr-xr-x. 2 app app    27 Oct 19 12:27 fonts
+drwxr-xr-x. 3 app app 16384 Oct 19 12:27 img
+drwxr-xr-x. 2 app app 16384 Oct 19 12:27 js
 ```
 
 #### External HTTP Verification via AWS Network Load Balancer

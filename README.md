@@ -15,8 +15,11 @@ This repository contains a production-grade **Kubernetes** and **Helm / Helmfile
     │   │   ├── deployment.yaml
     │   │   ├── hpa.yaml
     │   │   ├── ingress.yaml
+    │   │   ├── pv.yaml
+    │   │   ├── pvc.yaml
     │   │   ├── secrets.yaml
-    │   │   └── service.yaml
+    │   │   ├── service.yaml
+    │   │   └── storage-class.yaml
     │   ├── .sops.yaml
     │   ├── Chart.yaml
     │   ├── secrets.values.yaml
@@ -50,6 +53,10 @@ flowchart LR
     Sec["Secret (SOPS + AWS KMS Encrypted)"] -.->|envFrom| Deploy
     Pod1 -->|TCP :5432| RDS[("Amazon RDS PostgreSQL 16")]
     Pod2 -->|TCP :5432| RDS
+    Pod1 -->|Mount /app/static-collected| PVC["PVC: django-app-static-pvc"]
+    Pod2 -->|Mount /app/static-collected| PVC
+    PVC -->|Bound| PV["PV: django-app-static-pv (2Gi)"]
+    SC["StorageClass: django-static-sc"] -.->|Provisions / Binds| PV
 ```
 
 ### Key Features Implemented
@@ -75,6 +82,9 @@ flowchart LR
      - Configures an `Ingress` resource using the `nginx` Ingress class backed by an **AWS Network Load Balancer (NLB)**.
      - Provisions a **Cert-Manager `ClusterIssuer`** (`letsencrypt-prod`) using ACME HTTP-01 challenge to automatically issue and renew a **Let's Encrypt** TLS certificate.
    - **`templates/hpa.yaml`**: Configures an `autoscaling/v2` **`HorizontalPodAutoscaler`** that scales the Deployment between **2 and 4 replicas** whenever average **CPU or Memory utilization reaches 80%**.
+   - **`templates/storage-class.yaml`, `templates/pv.yaml` & `templates/pvc.yaml`**:
+     - Defines a **`StorageClass`** (`django-static-sc`), a **`PersistentVolume`** (`django-app-static-pv`, `2Gi`), and a **`PersistentVolumeClaim`** (`django-app-static-pvc`) attached to the Django pods at `/app/static-collected` to persist the application's static files across pod restarts and rescheduling.
+     - Uses an `initContainer` (`init-static-files`) in `deployment.yaml` to sync pre-compiled static assets into the persistent volume before Gunicorn starts.
 
 3. **Declarative Environment Orchestration (`helmfile/helmfile.yaml`)**:
    - Deploys the entire stack in dependency order with a single command:
