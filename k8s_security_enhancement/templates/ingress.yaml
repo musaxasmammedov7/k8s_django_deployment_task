@@ -1,33 +1,11 @@
-{{- if .Values.certManager.createClusterIssuer -}}
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: {{ .Values.certManager.issuerName }}
-  labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-spec:
-  acme:
-    server: {{ .Values.certManager.server }}
-    email: {{ .Values.certManager.email }}
-    privateKeySecretRef:
-      name: {{ .Values.certManager.issuerName }}-account-key
-    solvers:
-      - http01:
-          ingress:
-            class: {{ .Values.ingress.className }}
----
-{{- end }}
 {{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .Values.fullnameOverride | default .Release.Name }}
+  name: {{ include "k8s_security_enhancement.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- include "k8s_security_enhancement.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -58,7 +36,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ $.Values.fullnameOverride | default $.Release.Name }}
+                name: {{ include "k8s_security_enhancement.fullname" $ }}
                 port:
                   number: {{ $.Values.service.port }}
           {{- end }}

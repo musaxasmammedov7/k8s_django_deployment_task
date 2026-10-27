@@ -1,139 +1,189 @@
-# Kubernetes & Helm Deployment for Django Application on AWS (EKS + RDS)
+# Kubernetes Security Enhancement & Hardening
 
-This repository contains a production-grade **Kubernetes** and **Helm / Helmfile** deployment solution for the **Healthchecks Django Application** (upstream: [`kaaalim/django-sample-app`](https://github.com/kaaalim/django-sample-app.git), containerized fork: [`musaxasmammedov7/django-sample-app-ecs-fargate`](https://github.com/musaxasmammedov7/django-sample-app-ecs-fargate)) running on **Amazon EKS (Elastic Kubernetes Service)** and backed by **Amazon RDS for PostgreSQL**.
+This repository contains an enterprise-grade, hardened Kubernetes deployment for the Django Healthchecks application. It demonstrates the implementation of **Pod Security Standards (Restricted)**, **Network Policies**, **Role-Based Access Control (RBAC)**, **SOPS + AWS KMS secret encryption**, and **Helm template testing**.
 
 ---
 
-## Repository Structure
+## 1. Repository Structure
 
 ```text
-└── k8s_django_deployment_task
-    ├── helm_chart
-    │   ├── charts
-    │   ├── templates
-    │   │   ├── configmap.yaml
-    │   │   ├── deployment.yaml
-    │   │   ├── hpa.yaml
-    │   │   ├── ingress.yaml
-    │   │   ├── secrets.yaml
-    │   │   └── service.yaml
-    │   ├── .sops.yaml
-    │   ├── Chart.yaml
-    │   ├── secrets.values.yaml
-    │   └── values.yaml
-    ├── helmfile
-    │   └── helmfile.yaml
-    ├── terraform
-    │   ├── main.tf
-    │   └── outputs.tf
-    ├── README.md
-    └── documentation
-        └── deployment_guide.md
+├── k8s_security_enhancement/             # Hardened application Helm chart
+│   ├── charts/                           # Vendored immutable dependency charts
+│   │   ├── cert-manager-v1.13.1.tgz
+│   │   ├── ingress-nginx-4.8.1.tgz
+│   │   └── metrics-server-3.11.0.tgz
+│   ├── Chart.yaml                        # Chart metadata with declared dependencies
+│   ├── .helmignore                       # Packaging ignore rules
+│   ├── templates/                        # Hardened Kubernetes resource manifests
+│   │   ├── _helpers.tpl                  # Standardized naming and label templates
+│   │   ├── configmap.yaml                # Non-sensitive configuration
+│   │   ├── deployment.yaml               # Hardened Deployment (Restricted PSS compliant)
+│   │   ├── hpa.yaml                      # HorizontalPodAutoscaler (CPU & RAM)
+│   │   ├── ingress.yaml                  # AWS NLB Ingress with TLS termination
+│   │   ├── issuer.yaml                   # Cert-Manager ACME Let's Encrypt issuer
+│   │   ├── networkpolicy.yaml            # Default-Deny ingress/egress NetworkPolicy
+│   │   ├── NOTES.txt                     # Post-installation verification instructions
+│   │   ├── ns.yaml                       # Namespace with Pod Security Admission labels
+│   │   ├── secret.yaml                   # Secret resource manifest
+│   │   ├── serviceaccount.yaml           # Dedicated SA & least-privilege RBAC Role/Binding
+│   │   ├── service.yaml                  # ClusterIP internal service (:8080)
+│   │   └── tests/
+│   │       └── test-connection.yaml      # Automated Helm test hook
+│   └── values.yaml                       # Baseline configuration & security contexts
+├── helmfile.yaml                         # Declarative multi-chart environment orchestrator
+└── helm_secrets/                         # GitOps encrypted secrets and environment config
+    ├── django_config.yaml                # Non-secret environment overrides
+    ├── django_secret.yaml                # SOPS + AWS KMS encrypted sensitive secrets
+    └── .sops.yaml                        # SOPS encryption rules and KMS ARN definition
 ```
 
 ---
 
-## Architecture Overview
+## 2. Why This Repository Structure Is the Best
 
-```mermaid
-flowchart LR
-    User["Client / Browser"] -->|HTTP/HTTPS :80/:443| NLB["AWS Network Load Balancer"]
-    NLB --> Ingress["NGINX Ingress Controller"]
-    Ingress -->|TLS Cert| CertMgr["Cert-Manager (Let's Encrypt)"]
-    Ingress -->|ClusterIP :8080| Svc["Service: django-app (ClusterIP)"]
-    Svc --> Pod1["Django Pod 1 (:8080)"]
-    Svc --> Pod2["Django Pod 2 (:8080)"]
-    HPA["HorizontalPodAutoscaler (2-4 pods @ 80% CPU/RAM)"] -.->|Scales| Deploy["Deployment: django-app"]
-    Deploy --> Pod1
-    Deploy --> Pod2
-    CM["ConfigMap (Non-Sensitive Env)"] -.->|envFrom| Deploy
-    Sec["Secret (SOPS + AWS KMS Encrypted)"] -.->|envFrom| Deploy
-    Pod1 -->|TCP :5432| RDS[("Amazon RDS PostgreSQL 16")]
-    Pod2 -->|TCP :5432| RDS
-```
+This directory layout follows official CNCF and GitOps production best practices for several concrete architectural reasons:
 
-### Key Features Implemented
+### 2.1 Vendored Immutable Dependencies (`k8s_security_enhancement/charts/*.tgz`)
+* **Supply-Chain Integrity & Air-Gapped Reliability:** In production environments, relying on external Helm repositories (`charts.jetstack.io`, `kubernetes.github.io/ingress-nginx`) at deploy-time introduces availability risks (upstream repository outages, rate limiting, domain expiration) and security risks (upstream chart tampering or retagging).
+* Vendoring exact, pinned versions (`cert-manager-v1.13.1.tgz`, `ingress-nginx-4.8.1.tgz`, `metrics-server-3.11.0.tgz`) guarantees 100% reproducible, deterministic deployments across all environments without external network dependencies during chart installation.
 
-1. **Amazon EKS Cluster & Amazon RDS PostgreSQL (`terraform/`)**:
-   - Dedicated VPC (`10.20.0.0/16`) across 2 Availability Zones in `eu-north-1` (`eu-north-1a`, `eu-north-1b`) with public and private subnets tagged for AWS Load Balancer auto-discovery.
-   - **Amazon EKS v1.31** cluster (`django-k8s-cluster`) with a managed EC2 node group (`t3.medium` instances).
-   - **Amazon RDS PostgreSQL 16** (`django-k8s-postgres`) hosted in private subnets, accessible only from the EKS VPC CIDR on port `5432`.
-   - **Amazon ECR** repository (`669707688683.dkr.ecr.eu-north-1.amazonaws.com/django-sample-app`) storing the multi-stage hardened Django image.
-   - **AWS KMS Key** (`alias/k8s-django-helm-secrets`) used to encrypt application secrets at rest in Git.
+### 2.2 Clear Separation of Concerns (Chart vs. Environment vs. Secrets)
+* **Application Chart (`k8s_security_enhancement/`):** Contains purely generic, parameterized templates that define *how* the application runs, with no environment-specific hardcoding or credentials.
+* **Environment Orchestrator (`helmfile.yaml`):** Sits at the root level to coordinate the lifecycle and installation order (`needs:`) of cluster add-ons (metrics-server, ingress-nginx, cert-manager) alongside the application chart.
+* **Secrets Management (`helm_secrets/`):** Isolating encrypted secret files and the `.sops.yaml` configuration into their own dedicated directory prevents accidental template leaks, simplifies file-level access control in CI/CD pipelines, and cleanly delineates between public application code and sensitive credential configurations.
 
-2. **Custom Application Helm Chart (`helm_chart/`)**:
-   - **`templates/configmap.yaml`**: Injects non-sensitive environment variables (`DB`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_SSLMODE`, `DEBUG`, `ALLOWED_HOSTS`, `SITE_ROOT`, `PORT="8080"`).
-   - **`templates/secrets.yaml` & `secrets.values.yaml`**: Injects sensitive credentials (`SECRET_KEY`, `DB_PASSWORD`). Encrypted using **`helm-secrets` + Mozilla SOPS + AWS KMS**.
-   - **`templates/deployment.yaml`**:
-     - Runs **2 replicas** by default (`replicaCount: 2`).
-     - Operates on **port `8080`** (`--bind 0.0.0.0:8080`).
-     - Propagates both `ConfigMap` and `Secret` via `envFrom`.
-     - Configures HTTP **`livenessProbe`** and **`readinessProbe`** against `/api/v3/status/` on port `8080`.
-     - Includes SHA-256 checksum annotations so pods automatically roll when `ConfigMap` or `Secret` values change.
-   - **`templates/service.yaml`**: Exposes the pods internally within the cluster via a **`ClusterIP`** service on port `8080`.
-   - **`templates/ingress.yaml`**:
-     - Configures an `Ingress` resource using the `nginx` Ingress class backed by an **AWS Network Load Balancer (NLB)**.
-     - Provisions a **Cert-Manager `ClusterIssuer`** (`letsencrypt-prod`) using ACME HTTP-01 challenge to automatically issue and renew a **Let's Encrypt** TLS certificate.
-   - **`templates/hpa.yaml`**: Configures an `autoscaling/v2` **`HorizontalPodAutoscaler`** that scales the Deployment between **2 and 4 replicas** whenever average **CPU or Memory utilization reaches 80%**.
-
-3. **Declarative Environment Orchestration (`helmfile/helmfile.yaml`)**:
-   - Deploys the entire stack in dependency order with a single command:
-     1. `metrics-server` (`kube-system`)
-     2. `ingress-nginx` (`ingress-nginx`, provisioning the AWS NLB)
-     3. `cert-manager` (`cert-manager`, with CRDs installed)
-     4. `django-app` (`django-app`, decrypting `secrets.values.yaml` via `helm-secrets`)
+### 2.3 Strict Adherence to Helm Best Practices (`_helpers.tpl`, `NOTES.txt`, `tests/`)
+* Placing template helpers in `_helpers.tpl` ensures DRY labels and consistent selector metadata (`app.kubernetes.io/name`, `app.kubernetes.io/instance`).
+* Including `templates/tests/test-connection.yaml` allows continuous delivery pipelines to execute `helm test` automatically as a post-deployment gate before routing live production traffic.
 
 ---
 
-## Quick Start
+## 3. Threat Assessment & Mitigation Strategies
 
-### 1. Provision AWS Infrastructure (EKS, RDS, ECR, KMS)
-```bash
-cd terraform
-terraform init
-terraform apply -auto-approve
-aws eks update-kubeconfig --region eu-north-1 --name django-k8s-cluster
-```
+Applying threat modeling based on the **STRIDE** and **MITRE ATT&CK for Kubernetes** matrices identified six critical attack vectors in default Kubernetes deployments:
 
-### 2. Manage Encrypted Secrets (`helm-secrets` + SOPS + AWS KMS)
-```bash
-# View decrypted secrets in stdout without writing plaintext to disk
-helm secrets decrypt helm_chart/secrets.values.yaml
-
-# Edit encrypted secrets in-place
-helm secrets edit helm_chart/secrets.values.yaml
-```
-
-### 3. Deploy Full Environment via Helmfile
-```bash
-cd helmfile
-helmfile apply
-```
-
-### 4. Verify Deployment
-```bash
-kubectl get pods,svc,ingress,hpa -n django-app
-kubectl get clusterissuer,certificate -A
-```
+| # | Threat Vector | Impact | Mitigation Implemented |
+|---|---|---|---|
+| **1** | **Container Escape & Node Takeover** | High / Critical | Run as non-root (`UID 1000`), `allowPrivilegeEscalation: false`, drop `ALL` Linux capabilities, enable `seccompProfile: RuntimeDefault`. |
+| **2** | **Root Filesystem Modification & Malware Persistence** | High | `readOnlyRootFilesystem: true`. Transient writes redirected to constrained `emptyDir` on `/tmp`. |
+| **3** | **Stolen ServiceAccount Token & API Enumeration** | Critical | `automountServiceAccountToken: false` on Pod and ServiceAccount. RBAC Role restricted strictly to necessary operations. |
+| **4** | **Lateral Network Movement (Pod-to-Pod)** | High | Default-Deny `NetworkPolicy`. Ingress allowed only from `ingress-nginx`; Egress allowed only to CoreDNS (:53) and RDS PostgreSQL (:5432). |
+| **5** | **Plaintext Credentials in Git** | Critical | Secrets encrypted with **Mozilla SOPS** using **AWS KMS** (`AES256_GCM`). In-memory decryption at deployment time via `helm-secrets`. |
+| **6** | **Rogue Privileged Container Scheduling** | High | Namespace enforced with **Pod Security Admission (PSA)** at the `restricted` level (`pod-security.kubernetes.io/enforce: restricted`). |
 
 ---
 
-## Why Kubernetes and Helm Are Beneficial in This Scenario
+## 4. Security Hardening Implementation Details
 
-### Why Kubernetes?
-1. **Self-Healing & Zero-Downtime High Availability**: Running 2+ replicas across multiple Availability Zones ensures that if a container crashes (detected by `livenessProbe`) or a worker node fails, Kubernetes automatically reschedules the pod while `readinessProbe` prevents routing user traffic to unready containers during database migrations or startup.
-2. **Automated Horizontal Scaling (HPA)**: Traffic to health-monitoring platforms can spike unpredictably. The `HorizontalPodAutoscaler` monitors real-time CPU and RAM metrics and scales replicas from 2 to 4 automatically at the 80% threshold, then scales back down to save compute costs.
-3. **Clean Separation of Stateless Compute & Stateful Storage**: Stateless Django web workers scale freely inside EKS while stateful relational data stays safely managed in **Amazon RDS PostgreSQL** (with automated backups, encryption, and patching).
-4. **Cloud-Native Networking & Automated TLS**: Kubernetes integrates natively with AWS Load Balancers via the Ingress Controller and automates HTTPS certificate issuance and renewal via **Cert-Manager** and **Let's Encrypt**.
+### 4.1 Pod Security Admission (PSA) & Namespace Hardening
+Kubernetes v1.25+ enforces Pod Security Standards through built-in Pod Security Admission. We configured [`k8s_security_enhancement/templates/ns.yaml`](k8s_security_enhancement/templates/ns.yaml) with the strictest baseline:
 
-### Why Helm & Helmfile?
-1. **DRY, Parameterized Packaging**: Instead of maintaining duplicated raw YAML manifests across `dev`, `staging`, and `prod`, a single Helm chart (`helm_chart/`) templates all 6 Kubernetes resource types (`Deployment`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `HPA`) and injects environment-specific settings from `values.yaml`.
-2. **Secure GitOps Secret Management (`helm-secrets` + SOPS)**: Standard Kubernetes Secrets are merely Base64-encoded. By combining `helm-secrets` with Mozilla SOPS and AWS KMS, sensitive values (`DB_PASSWORD`, `SECRET_KEY`) are strongly encrypted (`AES256_GCM`) inside Git and decrypted only in memory during deployment.
-3. **One-Command Full-Stack Lifecycle (`helmfile`)**: `helmfile.yaml` codifies the entire cluster state—cluster add-ons (`metrics-server`, `ingress-nginx`, `cert-manager`) and the application chart—into a single declarative file with explicit dependency ordering (`needs:`).
+```yaml
+labels:
+  pod-security.kubernetes.io/enforce: "restricted"
+  pod-security.kubernetes.io/enforce-version: "latest"
+  pod-security.kubernetes.io/audit: "restricted"
+  pod-security.kubernetes.io/audit-version: "latest"
+  pod-security.kubernetes.io/warn: "restricted"
+  pod-security.kubernetes.io/warn-version: "latest"
+```
+* **Enforce:** Any pod that violates the Restricted standard is immediately rejected by the Kubernetes admission controller at deploy time.
+* **Audit & Warn:** Violations trigger warning annotations in the API server audit logs.
+
+### 4.2 Pod & Container SecurityContext Hardening
+In [`k8s_security_enhancement/templates/deployment.yaml`](k8s_security_enhancement/templates/deployment.yaml), both pod-level and container-level contexts are configured:
+
+```yaml
+spec:
+  # 1. Pod-level context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: "OnRootMismatch"
+    seccompProfile:
+      type: RuntimeDefault
+
+  containers:
+    - name: django-app
+      # 2. Container-level context
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+```
+
+* **`allowPrivilegeEscalation: false`:** Prevents binary child processes from gaining more privileges than their parent process (blocks `setuid` binaries).
+* **`readOnlyRootFilesystem: true`:** Makes the entire root filesystem read-only. An attacker exploiting an application vulnerability cannot write web shells, overwrite libraries, or download malware. Writable requirements (e.g. Django `/tmp` caching) are mounted explicitly via an `emptyDir` volume with a memory limit (`sizeLimit: 128Mi`).
+* **`capabilities: drop: ["ALL"]`:** Removes all 38+ default Linux kernel capabilities (including `CAP_NET_RAW`, `CAP_SYS_CHROOT`, `CAP_CHOWN`), stripping the process of administrative kernel access.
+* **`seccompProfile: type: RuntimeDefault`:** Activates the default container runtime seccomp filter, blocking dangerous system calls (`ptrace`, `sys_chroot`, `reboot`).
+
+### 4.3 Network Policy Isolation
+In [`k8s_security_enhancement/templates/networkpolicy.yaml`](k8s_security_enhancement/templates/networkpolicy.yaml), a zero-trust network posture is enforced:
+
+* **Ingress Restriction:**
+  - Blocks all inbound traffic from other pods/namespaces.
+  - Permits TCP traffic on port `8080` **only** from pods residing in the `ingress-nginx` namespace.
+* **Egress Restriction:**
+  - Blocks arbitrary outbound internet connections (preventing command-and-control communication and data exfiltration).
+  - Explicitly whitelists:
+    1. CoreDNS (`kube-system`, UDP/TCP :53) for cluster internal DNS resolution.
+    2. Amazon RDS PostgreSQL (`10.20.0.0/16`, TCP :5432) for application database access.
+    3. HTTPS (TCP :443) for necessary outbound API calls.
+
+### 4.4 RBAC & ServiceAccount Hardening
+In [`k8s_security_enhancement/templates/serviceaccount.yaml`](k8s_security_enhancement/templates/serviceaccount.yaml):
+* **`automountServiceAccountToken: false`:** By default, Kubernetes mounts a JWT token at `/var/run/secrets/kubernetes.io/serviceaccount/token`. If an application is compromised via Remote Code Execution (RCE), attackers frequently use this token to query the Kubernetes API. Setting `automountServiceAccountToken: false` removes this attack vector entirely.
+* **Least-Privilege Role & RoleBinding:** The pod is granted access only to the exact resources it needs (read-only `get`, `list` on its own ConfigMaps), adhering strictly to the principle of least privilege.
+
+### 4.5 Secrets Encryption with SOPS + AWS KMS
+* Encrypted file: [`helm_secrets/django_secret.yaml`](helm_secrets/django_secret.yaml)
+* Master Key: AWS KMS (`arn:aws:kms:eu-north-1:669707688683:key/63cc3f9e-d07f-4fbf-9439-78e6d0421c30`)
+* Algorithm: `AES256_GCM` authenticated symmetric encryption.
+* Deployment: `helmfile sync` uses `helm-secrets` to decrypt the values in-memory only during template evaluation; plaintext values are never committed to version control.
+
+### 4.6 Helm Template Testing
+In [`k8s_security_enhancement/templates/tests/test-connection.yaml`](k8s_security_enhancement/templates/tests/test-connection.yaml):
+* Defined as a Helm test hook (`"helm.sh/hook": test`).
+* Runs as an ephemeral non-root container with restricted `securityContext`.
+* Verifies HTTP reachability of the internal Service endpoint (`/api/v3/status/`) on port 8080.
+* Can be triggered via:
+  ```bash
+  helm test django-secure-app -n django-security-prod
+  ```
 
 ---
 
-## Detailed Documentation
+## 5. Verification Commands
 
-For a complete walkthrough of all steps, Kubernetes/Helm concepts, commands executed, verification outputs, and troubleshooting of issues faced during implementation, see:
-👉 **[`documentation/deployment_guide.md`](documentation/deployment_guide.md)**
+```bash
+# 1. Lint the hardened chart
+helm lint ./k8s_security_enhancement
+
+# 2. Render and inspect security contexts
+helm template test ./k8s_security_enhancement
+
+# 3. View decrypted secrets in stdout without writing plaintext to disk
+helm secrets decrypt ./helm_secrets/django_secret.yaml
+
+# 4. Deploy the complete environment via Helmfile
+helmfile sync
+
+# 5. Verify Pod Security Admission labels on namespace
+kubectl get ns django-security-prod --show-labels
+
+# 6. Verify running pods and active security contexts
+kubectl get pods -n django-security-prod -o wide
+kubectl get pods -n django-security-prod -o jsonpath='{.items[*].spec.securityContext}'
+
+# 7. Run automated Helm template test
+helm test django-secure-app -n django-security-prod
+```

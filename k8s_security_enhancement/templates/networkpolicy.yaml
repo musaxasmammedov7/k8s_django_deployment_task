@@ -1,0 +1,59 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "k8s_security_enhancement.fullname" . }}-netpol
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "k8s_security_enhancement.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "k8s_security_enhancement.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress on application port 8080 from Ingress Controller and Prometheus/health monitors
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.containerPort }}
+      from:
+        {{- if .Values.networkPolicy.ingress.fromIngressController }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingress.ingressNamespace }}
+        {{- end }}
+        - podSelector:
+            matchLabels:
+              {{- include "k8s_security_enhancement.selectorLabels" . | nindent 14 }}
+  egress:
+    # 1. DNS Resolution (CoreDNS in kube-system)
+    {{- if .Values.networkPolicy.egress.allowDns }}
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+    {{- end }}
+    # 2. Database connectivity to PostgreSQL RDS on port 5432
+    {{- if .Values.networkPolicy.egress.allowDb }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.egress.dbPort }}
+      to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.egress.dbCidr }}
+    {{- end }}
+    # 3. Secure outbound HTTPS for external integrations / webhooks
+    - ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

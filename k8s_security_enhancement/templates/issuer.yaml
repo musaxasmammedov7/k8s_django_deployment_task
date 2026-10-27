@@ -1,0 +1,18 @@
+{{- if .Values.issuer.enabled }}
+apiVersion: cert-manager.io/v1
+kind: {{ .Values.issuer.kind | default "ClusterIssuer" }}
+metadata:
+  name: {{ .Values.issuer.name }}
+  labels:
+    {{- include "k8s_security_enhancement.labels" . | nindent 4 }}
+spec:
+  acme:
+    server: {{ .Values.issuer.server }}
+    email: {{ .Values.issuer.email }}
+    privateKeySecretRef:
+      name: {{ .Values.issuer.name }}-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: {{ .Values.ingress.className }}
+{{- end }}

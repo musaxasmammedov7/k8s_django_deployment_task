@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "k8s_security_enhancement.fullname" . }}-test-connection"
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "k8s_security_enhancement.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "k8s_security_enhancement.serviceAccountName" . }}
+  automountServiceAccountToken: false
+  # Restricted PSS compliant securityContext
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: test-connection
+      image: curlimages/curl:8.5.0
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      command: ['curl']
+      args:
+        - '--fail'
+        - '--connect-timeout'
+        - '5'
+        - '--max-time'
+        - '10'
+        - 'http://{{ include "k8s_security_enhancement.fullname" . }}:{{ .Values.service.port }}/api/v3/status/'

@@ -1,0 +1,203 @@
+# Default values for k8s_security_enhancement chart
+
+replicaCount: 2
+
+image:
+  repository: 669707688683.dkr.ecr.eu-north-1.amazonaws.com/django-sample-app
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+nameOverride: ""
+fullnameOverride: "django-secure-app"
+
+containerPort: 8080
+
+args:
+  - "gunicorn"
+  - "hc.wsgi:application"
+  - "--bind"
+  - "0.0.0.0:8080"
+  - "--workers"
+  - "3"
+  - "--threads"
+  - "2"
+  - "--timeout"
+  - "60"
+  - "--access-logfile"
+  - "-"
+  - "--error-logfile"
+  - "-"
+
+# -----------------------------------------------------------------------------
+# Namespace & Pod Security Admission (PSA) Hardening
+# -----------------------------------------------------------------------------
+namespace:
+  create: true
+  name: "django-security-prod"
+  labels:
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/enforce-version: "latest"
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: "latest"
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: "latest"
+
+# -----------------------------------------------------------------------------
+# Pod-Level Security Hardening (securityContext compliant with Restricted PSS)
+# -----------------------------------------------------------------------------
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: "OnRootMismatch"
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-Level Security Hardening (securityContext compliant with Restricted PSS)
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# -----------------------------------------------------------------------------
+# RBAC & ServiceAccount Hardening (Least Privilege)
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: "django-secure-sa"
+  # Hardening: prevent automatic token mount to protect against token exfiltration
+  automountServiceAccountToken: false
+  annotations: {}
+
+rbac:
+  create: true
+  # Least privilege: only allow read-only access to own ConfigMap if needed
+  rules:
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["get", "list"]
+
+# -----------------------------------------------------------------------------
+# Network Policy (Default Deny + Explicit Ingress / Egress Whitelist)
+# -----------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  ingress:
+    # Allow traffic on port 8080 from ingress-nginx controller pods
+    fromIngressController: true
+    ingressNamespace: "ingress-nginx"
+  egress:
+    # Allow DNS resolution to CoreDNS in kube-system
+    allowDns: true
+    # Allow outbound connections to PostgreSQL RDS on port 5432
+    allowDb: true
+    dbPort: 5432
+    dbCidr: "10.20.0.0/16"
+
+# -----------------------------------------------------------------------------
+# Environment Variables (ConfigMap & Secret)
+# -----------------------------------------------------------------------------
+config:
+  DB: "postgres"
+  DB_HOST: "django-k8s-postgres.czmm644g0ujf.eu-north-1.rds.amazonaws.com"
+  DB_PORT: "5432"
+  DB_NAME: "hc"
+  DB_USER: "hc"
+  DB_SSLMODE: "require"
+  DEBUG: "False"
+  ALLOWED_HOSTS: "*"
+  SITE_ROOT: "https://django.k8s.musaxasmammedov.dev"
+  WAIT_FOR_DB: "true"
+  RUN_MIGRATIONS: "true"
+  PORT: "8080"
+  HOME: "/tmp"
+
+secrets:
+  SECRET_KEY: "django-k8s-prod-secret-key-9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c"
+  DB_PASSWORD: "DjangoK8sRdsPass2026!"
+
+# -----------------------------------------------------------------------------
+# Service (ClusterIP)
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+# -----------------------------------------------------------------------------
+# Probes (Liveness & Readiness on port 8080)
+# -----------------------------------------------------------------------------
+probes:
+  liveness:
+    path: /api/v3/status/
+    port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: /api/v3/status/
+    port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# -----------------------------------------------------------------------------
+# Resources (Requests and Limits)
+# -----------------------------------------------------------------------------
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# HorizontalPodAutoscaler (HPA v2)
+# -----------------------------------------------------------------------------
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# -----------------------------------------------------------------------------
+# Ingress & TLS
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: django-app-tls
+      hosts:
+        - django.k8s.musaxasmammedov.dev
+
+# -----------------------------------------------------------------------------
+# Cert-Manager Issuer
+# -----------------------------------------------------------------------------
+issuer:
+  enabled: true
+  name: "letsencrypt-prod"
+  kind: "ClusterIssuer"
+  email: "musaxasmammedov7@gmail.com"
+  server: "https://acme-v02.api.letsencrypt.org/directory"

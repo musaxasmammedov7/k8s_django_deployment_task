@@ -1,11 +1,12 @@
 # =============================================================================
-# Helmfile for Deploying the AWS EKS Django Environment
+# Helmfile: Secure Kubernetes Deployment Orchestration
 # =============================================================================
 # Deploys:
-#   1. metrics-server  -> Enables CPU & Memory metrics for HorizontalPodAutoscaler
-#   2. ingress-nginx   -> Provisions AWS Load Balancer (NLB) for external traffic
-#   3. cert-manager    -> Automates Let's Encrypt TLS certificate provisioning
-#   4. django-app      -> Custom Helm chart with RDS PostgreSQL, HPA, and SOPS secrets
+#   1. metrics-server  (Resource usage metrics for HPA)
+#   2. ingress-nginx   (AWS Network Load Balancer ingress controller)
+#   3. cert-manager    (Let's Encrypt TLS certificate automation)
+#   4. django-secure   (Hardened Django application with Pod Security Standards,
+#                       NetworkPolicy, RBAC, and SOPS-encrypted secrets)
 # =============================================================================
 
 repositories:
@@ -23,24 +24,22 @@ helmDefaults:
 
 releases:
   # ---------------------------------------------------------------------------
-  # 1. Kubernetes Metrics Server (Required by HPA for CPU/RAM 80% scaling)
+  # 1. Metrics Server
   # ---------------------------------------------------------------------------
   - name: metrics-server
     namespace: kube-system
-    chart: metrics-server/metrics-server
-    version: 3.12.2
+    chart: ./k8s_security_enhancement/charts/metrics-server-3.11.0.tgz
     values:
       - args:
           - --kubelet-insecure-tls
           - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
 
   # ---------------------------------------------------------------------------
-  # 2. Ingress Controller for AWS (Provisions AWS Network Load Balancer)
+  # 2. Ingress Controller (AWS NLB)
   # ---------------------------------------------------------------------------
   - name: ingress-nginx
     namespace: ingress-nginx
-    chart: ingress-nginx/ingress-nginx
-    version: 4.11.3
+    chart: ./k8s_security_enhancement/charts/ingress-nginx-4.8.1.tgz
     values:
       - controller:
           ingressClassResource:
@@ -52,30 +51,28 @@ releases:
             annotations:
               service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
               service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-              service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
 
   # ---------------------------------------------------------------------------
-  # 3. Cert-Manager (Obtains Let's Encrypt TLS Certificates via ACME HTTP-01)
+  # 3. Cert-Manager (Let's Encrypt TLS)
   # ---------------------------------------------------------------------------
   - name: cert-manager
     namespace: cert-manager
-    chart: jetstack/cert-manager
-    version: v1.16.2
+    chart: ./k8s_security_enhancement/charts/cert-manager-v1.13.1.tgz
     values:
-      - crds:
-          enabled: true
+      - installCRDs: true
 
   # ---------------------------------------------------------------------------
-  # 4. Django Healthchecks Application (Connected to AWS RDS PostgreSQL)
+  # 4. Hardened Django Application
   # ---------------------------------------------------------------------------
-  - name: django-app
-    namespace: django-app
-    chart: ../helm_chart
+  - name: django-secure-app
+    namespace: django-security-prod
+    chart: ./k8s_security_enhancement
     needs:
       - kube-system/metrics-server
       - ingress-nginx/ingress-nginx
       - cert-manager/cert-manager
     values:
-      - ../helm_chart/values.yaml
+      - ./k8s_security_enhancement/values.yaml
+      - ./helm_secrets/django_config.yaml
     secrets:
-      - ../helm_chart/secrets.values.yaml
+      - ./helm_secrets/django_secret.yaml
