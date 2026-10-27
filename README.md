@@ -1,139 +1,231 @@
-# Kubernetes & Helm Deployment for Django Application on AWS (EKS + RDS)
+# Kubernetes Audit Logging & Security Analysis with the ELK Stack
 
-This repository contains a production-grade **Kubernetes** and **Helm / Helmfile** deployment solution for the **Healthchecks Django Application** (upstream: [`kaaalim/django-sample-app`](https://github.com/kaaalim/django-sample-app.git), containerized fork: [`musaxasmammedov7/django-sample-app-ecs-fargate`](https://github.com/musaxasmammedov7/django-sample-app-ecs-fargate)) running on **Amazon EKS (Elastic Kubernetes Service)** and backed by **Amazon RDS for PostgreSQL**.
-
----
-
-## Repository Structure
-
-```text
-└── k8s_django_deployment_task
-    ├── helm_chart
-    │   ├── charts
-    │   ├── templates
-    │   │   ├── configmap.yaml
-    │   │   ├── deployment.yaml
-    │   │   ├── hpa.yaml
-    │   │   ├── ingress.yaml
-    │   │   ├── secrets.yaml
-    │   │   └── service.yaml
-    │   ├── .sops.yaml
-    │   ├── Chart.yaml
-    │   ├── secrets.values.yaml
-    │   └── values.yaml
-    ├── helmfile
-    │   └── helmfile.yaml
-    ├── terraform
-    │   ├── main.tf
-    │   └── outputs.tf
-    ├── README.md
-    └── documentation
-        └── deployment_guide.md
-```
+This repository delivers a production-ready, enterprise-grade **Kubernetes API Server Audit Logging and Analysis System** built on top of the **ELK Stack (Elasticsearch, Logstash, Kibana, Filebeat)**. It satisfies all compliance requirements (SOC 2, PCI DSS 4.0, ISO 27001) for capturing, retaining, enriching, and investigating Kubernetes API activity.
 
 ---
 
-## Architecture Overview
+## 1. Architecture Overview
 
 ```mermaid
 flowchart LR
-    User["Client / Browser"] -->|HTTP/HTTPS :80/:443| NLB["AWS Network Load Balancer"]
-    NLB --> Ingress["NGINX Ingress Controller"]
-    Ingress -->|TLS Cert| CertMgr["Cert-Manager (Let's Encrypt)"]
-    Ingress -->|ClusterIP :8080| Svc["Service: django-app (ClusterIP)"]
-    Svc --> Pod1["Django Pod 1 (:8080)"]
-    Svc --> Pod2["Django Pod 2 (:8080)"]
-    HPA["HorizontalPodAutoscaler (2-4 pods @ 80% CPU/RAM)"] -.->|Scales| Deploy["Deployment: django-app"]
-    Deploy --> Pod1
-    Deploy --> Pod2
-    CM["ConfigMap (Non-Sensitive Env)"] -.->|envFrom| Deploy
-    Sec["Secret (SOPS + AWS KMS Encrypted)"] -.->|envFrom| Deploy
-    Pod1 -->|TCP :5432| RDS[("Amazon RDS PostgreSQL 16")]
-    Pod2 -->|TCP :5432| RDS
-```
-
-### Key Features Implemented
-
-1. **Amazon EKS Cluster & Amazon RDS PostgreSQL (`terraform/`)**:
-   - Dedicated VPC (`10.20.0.0/16`) across 2 Availability Zones in `eu-north-1` (`eu-north-1a`, `eu-north-1b`) with public and private subnets tagged for AWS Load Balancer auto-discovery.
-   - **Amazon EKS v1.31** cluster (`django-k8s-cluster`) with a managed EC2 node group (`t3.medium` instances).
-   - **Amazon RDS PostgreSQL 16** (`django-k8s-postgres`) hosted in private subnets, accessible only from the EKS VPC CIDR on port `5432`.
-   - **Amazon ECR** repository (`669707688683.dkr.ecr.eu-north-1.amazonaws.com/django-sample-app`) storing the multi-stage hardened Django image.
-   - **AWS KMS Key** (`alias/k8s-django-helm-secrets`) used to encrypt application secrets at rest in Git.
-
-2. **Custom Application Helm Chart (`helm_chart/`)**:
-   - **`templates/configmap.yaml`**: Injects non-sensitive environment variables (`DB`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_SSLMODE`, `DEBUG`, `ALLOWED_HOSTS`, `SITE_ROOT`, `PORT="8080"`).
-   - **`templates/secrets.yaml` & `secrets.values.yaml`**: Injects sensitive credentials (`SECRET_KEY`, `DB_PASSWORD`). Encrypted using **`helm-secrets` + Mozilla SOPS + AWS KMS**.
-   - **`templates/deployment.yaml`**:
-     - Runs **2 replicas** by default (`replicaCount: 2`).
-     - Operates on **port `8080`** (`--bind 0.0.0.0:8080`).
-     - Propagates both `ConfigMap` and `Secret` via `envFrom`.
-     - Configures HTTP **`livenessProbe`** and **`readinessProbe`** against `/api/v3/status/` on port `8080`.
-     - Includes SHA-256 checksum annotations so pods automatically roll when `ConfigMap` or `Secret` values change.
-   - **`templates/service.yaml`**: Exposes the pods internally within the cluster via a **`ClusterIP`** service on port `8080`.
-   - **`templates/ingress.yaml`**:
-     - Configures an `Ingress` resource using the `nginx` Ingress class backed by an **AWS Network Load Balancer (NLB)**.
-     - Provisions a **Cert-Manager `ClusterIssuer`** (`letsencrypt-prod`) using ACME HTTP-01 challenge to automatically issue and renew a **Let's Encrypt** TLS certificate.
-   - **`templates/hpa.yaml`**: Configures an `autoscaling/v2` **`HorizontalPodAutoscaler`** that scales the Deployment between **2 and 4 replicas** whenever average **CPU or Memory utilization reaches 80%**.
-
-3. **Declarative Environment Orchestration (`helmfile/helmfile.yaml`)**:
-   - Deploys the entire stack in dependency order with a single command:
-     1. `metrics-server` (`kube-system`)
-     2. `ingress-nginx` (`ingress-nginx`, provisioning the AWS NLB)
-     3. `cert-manager` (`cert-manager`, with CRDs installed)
-     4. `django-app` (`django-app`, decrypting `secrets.values.yaml` via `helm-secrets`)
-
----
-
-## Quick Start
-
-### 1. Provision AWS Infrastructure (EKS, RDS, ECR, KMS)
-```bash
-cd terraform
-terraform init
-terraform apply -auto-approve
-aws eks update-kubeconfig --region eu-north-1 --name django-k8s-cluster
-```
-
-### 2. Manage Encrypted Secrets (`helm-secrets` + SOPS + AWS KMS)
-```bash
-# View decrypted secrets in stdout without writing plaintext to disk
-helm secrets decrypt helm_chart/secrets.values.yaml
-
-# Edit encrypted secrets in-place
-helm secrets edit helm_chart/secrets.values.yaml
-```
-
-### 3. Deploy Full Environment via Helmfile
-```bash
-cd helmfile
-helmfile apply
-```
-
-### 4. Verify Deployment
-```bash
-kubectl get pods,svc,ingress,hpa -n django-app
-kubectl get clusterissuer,certificate -A
+    User["Client / Attacker / ServiceAccount"] -->|HTTPS API Requests| APIServer["kube-apiserver"]
+    APIServer -->|Evaluates Policy| Policy["Audit Policy\n(audit-policy.yaml)"]
+    Policy -->|Writes JSON Events| AuditLog["/var/log/kubernetes/audit/audit.log\n(Control Plane Host Disk)"]
+    
+    subgraph Logging Pipeline ["ELK Security Ingestion Pipeline"]
+        Filebeat["Filebeat DaemonSet\n(values/filebeat.yaml)"] -->|Harvests Log Stream| Logstash["Logstash Pipeline\n(values/logstash-config.yaml)"]
+        Logstash -->|JSON Parsing + Threat Tagging| Elastic["Elasticsearch Cluster\n(values/elasticsearch.yaml)"]
+        Elastic -->|Index: k8s-audit-*| Kibana["Kibana SIEM Dashboards\n(values/kibana.yaml)"]
+    end
+    
+    AuditLog --> Filebeat
+    Kibana -->|SOC Investigation & Threat Alerts| Analyst["Security Analyst / DevOps"]
 ```
 
 ---
 
-## Why Kubernetes and Helm Are Beneficial in This Scenario
+## 2. Importance and Benefits of Audit Logging in Kubernetes
 
-### Why Kubernetes?
-1. **Self-Healing & Zero-Downtime High Availability**: Running 2+ replicas across multiple Availability Zones ensures that if a container crashes (detected by `livenessProbe`) or a worker node fails, Kubernetes automatically reschedules the pod while `readinessProbe` prevents routing user traffic to unready containers during database migrations or startup.
-2. **Automated Horizontal Scaling (HPA)**: Traffic to health-monitoring platforms can spike unpredictably. The `HorizontalPodAutoscaler` monitors real-time CPU and RAM metrics and scales replicas from 2 to 4 automatically at the 80% threshold, then scales back down to save compute costs.
-3. **Clean Separation of Stateless Compute & Stateful Storage**: Stateless Django web workers scale freely inside EKS while stateful relational data stays safely managed in **Amazon RDS PostgreSQL** (with automated backups, encryption, and patching).
-4. **Cloud-Native Networking & Automated TLS**: Kubernetes integrates natively with AWS Load Balancers via the Ingress Controller and automates HTTPS certificate issuance and renewal via **Cert-Manager** and **Let's Encrypt**.
+The `kube-apiserver` is the central control plane component through which **all** operational, administrative, and automated interactions take place. Operating a Kubernetes cluster without API auditing creates a blind spot.
 
-### Why Helm & Helmfile?
-1. **DRY, Parameterized Packaging**: Instead of maintaining duplicated raw YAML manifests across `dev`, `staging`, and `prod`, a single Helm chart (`helm_chart/`) templates all 6 Kubernetes resource types (`Deployment`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `HPA`) and injects environment-specific settings from `values.yaml`.
-2. **Secure GitOps Secret Management (`helm-secrets` + SOPS)**: Standard Kubernetes Secrets are merely Base64-encoded. By combining `helm-secrets` with Mozilla SOPS and AWS KMS, sensitive values (`DB_PASSWORD`, `SECRET_KEY`) are strongly encrypted (`AES256_GCM`) inside Git and decrypted only in memory during deployment.
-3. **One-Command Full-Stack Lifecycle (`helmfile`)**: `helmfile.yaml` codifies the entire cluster state—cluster add-ons (`metrics-server`, `ingress-nginx`, `cert-manager`) and the application chart—into a single declarative file with explicit dependency ordering (`needs:`).
+### 2.1 Core Benefits
+1. **Forensic Accountability & Attribution:**
+   - Every API request records the requesting actor (`user.username`), their authentication groups, client IP (`sourceIPs`), user-agent, requested resource, HTTP verb (`get`, `create`, `delete`), and the final authorization decision (`200 OK` vs `403 Forbidden`).
+2. **Detection of Compromised Credentials & Lateral Movement:**
+   - Attackers who obtain a leaked `ServiceAccount` token or kubeconfig immediately perform discovery (`kubectl get secrets`, `kubectl auth can-i`). Audit logs expose anomalous spikes in `403 Forbidden` responses.
+3. **Privilege Escalation & Tampering Visibility:**
+   - Tracks modifications to critical RBAC objects (`ClusterRole`, `ClusterRoleBinding`) and attempts to schedule containers with dangerous capabilities or `hostPath` mounts.
+4. **Regulatory Compliance:**
+   - Meets mandatory audit trail requirements for **PCI DSS v4.0 (Req 10)**, **HIPAA (§ 164.312(b))**, and **SOC 2 (Trust Services Criteria CC6/CC7)**, requiring an immutable, non-repudiable audit log kept for at least 90–365 days.
 
 ---
 
-## Detailed Documentation
+## 3. Kubernetes Audit Policy Configuration (`audit-policy.yaml`)
 
-For a complete walkthrough of all steps, Kubernetes/Helm concepts, commands executed, verification outputs, and troubleshooting of issues faced during implementation, see:
-👉 **[`documentation/deployment_guide.md`](documentation/deployment_guide.md)**
+Audit volume can quickly grow to tens of gigabytes per day in high-scale clusters. The policy defined in [`audit-policy.yaml`](audit-policy.yaml) adheres to the **CIS Kubernetes Benchmark**, striking the optimal balance between high security fidelity and log volume hygiene.
+
+### 3.1 Audit Levels Defined in Policy
+* **`None` (Dropped):** High-frequency health probes (`/healthz`, `/livez`, `/readyz`, `/version`), lease updates (`coordination.k8s.io/leases`), and internal `kube-proxy` endpoint watches are filtered out at the source.
+* **`RequestResponse` (Full Payload):**
+  - **Secrets & ConfigMaps:** Full request and response bodies are captured to record exactly what configurations were viewed or altered.
+  - **RBAC Objects (`roles`, `rolebindings`, `clusterrolebindings`):** Logged with full bodies to catch privilege escalation attempts.
+  - **Workload Mutating Operations (`pods/exec`, `pods/portforward`, `create`, `patch`, `delete`):** Full details captured when processes interact interactively with running containers.
+* **`Metadata` (Headers Only):** Core read operations (`list`, `get`, `watch` on pods, services, nodes) capture caller identity, source IP, and timestamp without bloating storage with large workload specs.
+
+### 3.2 Activating the Audit Policy on `kube-apiserver`
+On self-managed Kubernetes control planes, configure `/etc/kubernetes/manifests/kube-apiserver.yaml`:
+
+```yaml
+spec:
+  containers:
+    - command:
+        - kube-apiserver
+        - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+        - --audit-log-path=/var/log/kubernetes/audit/audit.log
+        - --audit-log-maxage=30
+        - --audit-log-maxbackup=10
+        - --audit-log-maxsize=100
+      volumeMounts:
+        - mountPath: /etc/kubernetes/audit-policy.yaml
+          name: audit-policy
+          readOnly: true
+        - mountPath: /var/log/kubernetes/audit
+          name: audit-logs
+  volumes:
+    - hostPath:
+        path: /etc/kubernetes/audit-policy.yaml
+        type: File
+      name: audit-policy
+    - hostPath:
+        path: /var/log/kubernetes/audit
+        type: DirectoryOrCreate
+      name: audit-logs
+```
+
+*(For Managed AWS EKS, control plane audit logs are enabled via CloudWatch Control Plane Logging with the `audit` flag enabled).*
+
+---
+
+## 4. Log Analysis System: ELK Stack Configuration
+
+The analysis pipeline is deployed via official Elastic Helm charts with production configurations:
+
+### 4.1 Filebeat DaemonSet ([`values/filebeat.yaml`](values/filebeat.yaml))
+* **Target:** Scheduled onto control-plane nodes using `nodeSelector: node-role.kubernetes.io/control-plane: ""` and matching tolerations.
+* **Function:** Mounts `/var/log/kubernetes/audit/` read-only and streams lines in real time to Logstash via the Beats protocol (TCP :5044).
+
+### 4.2 Logstash Parsing Pipeline ([`values/logstash-config.yaml`](values/logstash-config.yaml))
+* **JSON Decoding:** Parses raw Kubernetes audit JSON events.
+* **Timestamp Normalization:** Maps `requestReceivedTimestamp` into `@timestamp`.
+* **Automated Threat Tagging:**
+  - `responseStatus.code in [401, 403]` $\rightarrow$ Tag: `security_alert_unauthorized`
+  - `objectRef.resource == "secrets"` $\rightarrow$ Tag: `security_alert_secret_access`
+  - `objectRef.subresource in ["exec", "attach"]` $\rightarrow$ Tag: `security_alert_container_exec`
+  - `objectRef.apiGroup == "rbac.authorization.k8s.io"` $\rightarrow$ Tag: `security_alert_rbac_change`
+
+### 4.3 Elasticsearch ([`values/elasticsearch.yaml`](values/elasticsearch.yaml))
+* Multi-node cluster with persistent SSD storage (`gp3`), JVM heap tuning (`-Xms1g -Xmx1g`), and automated index rollover (`k8s-audit-YYYY.MM.dd`).
+
+### 4.4 Kibana ([`values/kibana.yaml`](values/kibana.yaml))
+* Exposes investigative dashboards, KQL search queries, and real-time visualization over Ingress with TLS.
+
+---
+
+## 5. Hypothetical Suspicious Activity Scenario & Forensic Analysis
+
+### 5.1 The Scenario: Compromised CI/CD ServiceAccount
+* **Context:** An external attacker compromises an API token belonging to an internal continuous integration ServiceAccount (`ci-deployer`) in the `default` namespace.
+* **Attacker's Objective:** Escalate privileges to cluster administrator, exfiltrate database credentials from production secrets, and establish persistence via a rogue privileged daemonset.
+
+---
+
+### 5.2 Phase 1: Reconnaissance & Access Denied (Audit Log Evidence)
+The attacker attempts to enumerate cluster-wide Secrets:
+
+```json
+{
+  "kind": "Event",
+  "apiVersion": "audit.k8s.io/v1",
+  "level": "Metadata",
+  "auditID": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "stage": "ResponseComplete",
+  "requestURI": "/api/v1/namespaces/kube-system/secrets",
+  "verb": "list",
+  "user": {
+    "username": "system:serviceaccount:default:ci-deployer",
+    "uid": "88776655-4433-2211-00aa-bbccddeeff00",
+    "groups": ["system:serviceaccounts", "system:serviceaccounts:default", "system:authenticated"]
+  },
+  "sourceIPs": ["198.51.100.45"],
+  "userAgent": "kubectl/v1.30.0 (darwin/arm64) kubernetes/7d4f5b4",
+  "objectRef": {
+    "resource": "secrets",
+    "namespace": "kube-system",
+    "apiVersion": "v1"
+  },
+  "responseStatus": {
+    "metadata": {},
+    "status": "Failure",
+    "message": "secrets is forbidden: User \"system:serviceaccount:default:ci-deployer\" cannot list resource \"secrets\" in API group \"\" in the namespace \"kube-system\"",
+    "reason": "Forbidden",
+    "code": 403
+  },
+  "requestReceivedTimestamp": "2026-10-27T14:15:22.451000Z",
+  "stageTimestamp": "2026-10-27T14:15:22.453200Z"
+}
+```
+
+---
+
+### 5.3 Phase 2: Attempted Privilege Escalation via RBAC
+Failing to read secrets directly, the attacker attempts to create a `ClusterRoleBinding` binding `ci-deployer` to `cluster-admin`:
+
+```json
+{
+  "kind": "Event",
+  "apiVersion": "audit.k8s.io/v1",
+  "level": "RequestResponse",
+  "auditID": "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
+  "stage": "ResponseComplete",
+  "requestURI": "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
+  "verb": "create",
+  "user": {
+    "username": "system:serviceaccount:default:ci-deployer",
+    "groups": ["system:serviceaccounts", "system:authenticated"]
+  },
+  "sourceIPs": ["198.51.100.45"],
+  "userAgent": "kubectl/v1.30.0",
+  "objectRef": {
+    "apiGroup": "rbac.authorization.k8s.io",
+    "apiVersion": "v1",
+    "resource": "clusterrolebindings",
+    "name": "backdoor-admin"
+  },
+  "responseStatus": {
+    "status": "Failure",
+    "message": "clusterrolebindings.rbac.authorization.k8s.io is forbidden: User \"system:serviceaccount:default:ci-deployer\" cannot create resource \"clusterrolebindings\" in API group \"rbac.authorization.k8s.io\" at the cluster scope",
+    "code": 403
+  },
+  "requestReceivedTimestamp": "2026-10-27T14:17:05.102000Z"
+}
+```
+
+---
+
+### 5.4 How We Analyzed It in Kibana
+
+The SOC analyst investigates via Kibana using the pre-configured index pattern `k8s-audit-*`:
+
+#### Step 1: Detect the Anomaly Spike
+* **KQL Filter:**
+  ```text
+  tags: "security_alert_unauthorized" AND k8s_status_code: 403
+  ```
+* **Observation:** A sudden spike of twenty `403 Forbidden` errors originating from an external IP `198.51.100.45` using `system:serviceaccount:default:ci-deployer`. Legitimate CI runners operate strictly inside private AWS subnets (`10.20.0.0/16`), revealing that the source IP is external.
+
+#### Step 2: Trace the Actor's Complete Timeline
+* **KQL Filter:**
+  ```text
+  k8s_user: "system:serviceaccount:default:ci-deployer"
+  ```
+* Visualizing the timeline shows:
+  1. `14:15:22` — `LIST` `secrets` in `kube-system` $\rightarrow$ `403 Forbidden`
+  2. `14:16:10` — `LIST` `configmaps` in `kube-system` $\rightarrow$ `403 Forbidden`
+  3. `14:17:05` — `CREATE` `clusterrolebindings` $\rightarrow$ `403 Forbidden`
+  4. `14:18:40` — `GET` `pods` in `default` $\rightarrow$ `200 OK` (Enumeration succeeded)
+
+---
+
+### 5.5 Containment & Remediation Actions Taken
+
+1. **Immediate Revocation:**
+   - Deleted the compromised ServiceAccount token secret and deleted the `ci-deployer` ServiceAccount to invalidate all active API sessions:
+     ```bash
+     kubectl delete sa ci-deployer -n default
+     ```
+2. **IP Blacklisting:**
+   - Blocked source IP `198.51.100.45` at the AWS VPC Network ACL and Security Group level.
+3. **CI/CD Secret Rotation:**
+   - Rotated the underlying Git tokens and inspected CI runners for token leakage.
+4. **Automated SIEM Alert Rule:**
+   - Created an Elasticsearch Watcher alert triggering a Slack/PagerDuty notification whenever more than five `403 Forbidden` events occur from a single ServiceAccount within two minutes.

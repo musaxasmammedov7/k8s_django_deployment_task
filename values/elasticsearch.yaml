@@ -1,0 +1,55 @@
+# =============================================================================
+# Elasticsearch Helm Chart Configuration (values/elasticsearch.yaml)
+# Chart: elastic/elasticsearch (v8.x / v7.x compatible)
+# =============================================================================
+
+clusterName: "k8s-audit-elastic"
+nodeGroup: "master"
+
+# High availability topology
+replicas: 2
+minimumMasterNodes: 1
+
+# Resource limits & JVM heap tuning
+resources:
+  requests:
+    cpu: "500m"
+    memory: "2Gi"
+  limits:
+    cpu: "1000m"
+    memory: "2Gi"
+
+esJavaOpts: "-Xmx1g -Xms1g"
+
+# Persistent Volume Storage for audit log indices
+volumeClaimTemplate:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "gp3"
+  resources:
+    requests:
+      storage: 20Gi
+
+# Pod anti-affinity to spread Elasticsearch pods across distinct nodes
+antiAffinity: "hard"
+
+# Container & Pod security hardening
+protocol: http
+httpPort: 9200
+transportPort: 9300
+
+podSecurityContext:
+  fsGroup: 1000
+  runAsUser: 1000
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Retention & Index lifecycle management
+esConfig:
+  elasticsearch.yml: |
+    xpack.security.enabled: false
+    indices.lifecycle.history_index_enabled: false

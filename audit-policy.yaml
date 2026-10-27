@@ -1,0 +1,108 @@
+# =============================================================================
+# Kubernetes API Server Audit Policy (audit.k8s.io/v1)
+# =============================================================================
+# Adheres to CIS Kubernetes Benchmark and production audit best practices.
+# Configured via kube-apiserver flags:
+#   --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+#   --audit-log-path=/var/log/kubernetes/audit/audit.log
+#   --audit-log-maxage=30
+#   --audit-log-maxbackup=10
+#   --audit-log-maxsize=100
+# =============================================================================
+
+apiVersion: audit.k8s.io/v1
+kind: Policy
+# Do not generate audit events for requests in RequestReceived stage (reduces volume by 50%)
+omitStages:
+  - "RequestReceived"
+
+rules:
+  # ---------------------------------------------------------------------------
+  # 1. High-frequency noisy read-only and health endpoints (DROP)
+  # ---------------------------------------------------------------------------
+  - level: None
+    nonResourceURLs:
+      - "/healthz*"
+      - "/livez*"
+      - "/readyz*"
+      - "/version"
+      - "/swagger*"
+      - "/openapi*"
+
+  # ---------------------------------------------------------------------------
+  # 2. Noisy internal controller events & leader election leases (DROP)
+  # ---------------------------------------------------------------------------
+  - level: None
+    users:
+      - "system:kube-proxy"
+    verbs:
+      - "watch"
+    resources:
+      - group: ""
+        resources: ["endpoints", "services", "endpointslices"]
+
+  - level: None
+    users:
+      - "system:apiserver"
+      - "system:kube-scheduler"
+      - "system:kube-controller-manager"
+    resources:
+      - group: "coordination.k8s.io"
+        resources: ["leases"]
+
+  # ---------------------------------------------------------------------------
+  # 3. Sensitive Security Resources: Secrets & ConfigMaps (RequestResponse)
+  # ---------------------------------------------------------------------------
+  # Capture full payload on read/write to detect credential theft or tampering
+  - level: RequestResponse
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps"]
+      - group: "authentication.k8s.io"
+        resources: ["tokenreviews"]
+      - group: "certificates.k8s.io"
+        resources: ["certificatesigningrequests"]
+
+  # ---------------------------------------------------------------------------
+  # 4. RBAC Modifications (RequestResponse)
+  # ---------------------------------------------------------------------------
+  # Capture full details for privilege escalation attempts
+  - level: RequestResponse
+    resources:
+      - group: "rbac.authorization.k8s.io"
+        resources:
+          - "roles"
+          - "rolebindings"
+          - "clusterroles"
+          - "clusterrolebindings"
+
+  # ---------------------------------------------------------------------------
+  # 5. Core Workloads: Pods, Deployments, DaemonSets, StatefulSets (RequestResponse on write)
+  # ---------------------------------------------------------------------------
+  - level: RequestResponse
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+    resources:
+      - group: ""
+        resources: ["pods", "pods/exec", "pods/portforward", "pods/attach"]
+      - group: "apps"
+        resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+      - group: "batch"
+        resources: ["jobs", "cronjobs"]
+
+  # ---------------------------------------------------------------------------
+  # 6. Read operations on core workloads (Metadata level)
+  # ---------------------------------------------------------------------------
+  - level: Metadata
+    verbs: ["get", "list", "watch"]
+    resources:
+      - group: ""
+        resources: ["pods", "services", "namespaces", "nodes"]
+      - group: "apps"
+        resources: ["deployments", "statefulsets", "daemonsets"]
+
+  # ---------------------------------------------------------------------------
+  # 7. Default catch-all rule (Metadata level for all other requests)
+  # ---------------------------------------------------------------------------
+  - level: Metadata
+    omitStages:
+      - "RequestReceived"

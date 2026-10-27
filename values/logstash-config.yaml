@@ -1,0 +1,104 @@
+# =============================================================================
+# Logstash Helm Chart Configuration & Pipeline (values/logstash-config.yaml)
+# Chart: elastic/logstash
+# =============================================================================
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: "300m"
+    memory: "1Gi"
+  limits:
+    cpu: "1000m"
+    memory: "2Gi"
+
+logstashJavaOpts: "-Xmx1g -Xms1g"
+
+service:
+  type: ClusterIP
+  ports:
+    - name: beats
+      port: 5044
+      protocol: TCP
+      targetPort: 5044
+
+# -----------------------------------------------------------------------------
+# Logstash Processing Pipeline for Kubernetes Audit Logs
+# -----------------------------------------------------------------------------
+logstashPipeline:
+  logstash.conf: |
+    input {
+      beats {
+        port => 5044
+      }
+    }
+
+    filter {
+      # 1. Parse JSON payload of raw Kubernetes audit log
+      json {
+        source => "message"
+        remove_field => ["message"]
+      }
+
+      # 2. Parse request timestamp
+      date {
+        match => ["requestReceivedTimestamp", "ISO8601"]
+        target => "@timestamp"
+      }
+
+      # 3. Extract core audit fields for high-performance Kibana indexing
+      mutate {
+        add_field => {
+          "k8s_user"        => "%{[user][username]}"
+          "k8s_verb"        => "%{[verb]}"
+          "k8s_resource"    => "%{[objectRef][resource]}"
+          "k8s_subresource" => "%{[objectRef][subresource]}"
+          "k8s_namespace"   => "%{[objectRef][namespace]}"
+          "k8s_name"        => "%{[objectRef][name]}"
+          "k8s_status_code" => "%{[responseStatus][code]}"
+          "k8s_source_ip"   => "%{[sourceIPs][0]}"
+          "k8s_user_agent"  => "%{[userAgent]}"
+        }
+      }
+
+      # 4. Security Categorization & Automated Threat Tagging
+      # Detect 401/403 Unauthorized Attempts
+      if [responseStatus][code] in [401, 403] {
+        mutate {
+          add_tag => ["security_alert_unauthorized"]
+          add_field => { "alert_severity" => "HIGH" }
+        }
+      }
+
+      # Detect Secret exfiltration attempts
+      if [objectRef][resource] == "secrets" and [verb] in ["get", "list"] {
+        mutate {
+          add_tag => ["security_alert_secret_access"]
+          add_field => { "alert_severity" => "MEDIUM" }
+        }
+      }
+
+      # Detect RBAC privilege escalation modifications
+      if [objectRef][apiGroup] == "rbac.authorization.k8s.io" and [verb] in ["create", "update", "patch"] {
+        mutate {
+          add_tag => ["security_alert_rbac_change"]
+          add_field => { "alert_severity" => "CRITICAL" }
+        }
+      }
+
+      # Detect container execution (kubectl exec) into running workloads
+      if [objectRef][subresource] in ["exec", "attach"] {
+        mutate {
+          add_tag => ["security_alert_container_exec"]
+          add_field => { "alert_severity" => "HIGH" }
+        }
+      }
+    }
+
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch-master:9200"]
+        index => "k8s-audit-%{+YYYY.MM.dd}"
+      }
+    }

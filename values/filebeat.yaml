@@ -1,0 +1,58 @@
+# =============================================================================
+# Filebeat Helm Chart Configuration (values/filebeat.yaml)
+# Chart: elastic/filebeat
+# =============================================================================
+
+# Deploy as DaemonSet targeting control-plane / master nodes where audit.log is generated
+daemonset:
+  enabled: true
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
+
+# Extra volume mounts to read the host audit log file directly
+extraVolumes:
+  - name: audit-logs
+    hostPath:
+      path: /var/log/kubernetes/audit
+      type: DirectoryOrCreate
+
+extraVolumeMounts:
+  - name: audit-logs
+    mountPath: /var/log/kubernetes/audit
+    readOnly: true
+
+# Filebeat pipeline configuration
+filebeatConfig:
+  filebeat.yml: |
+    filebeat.inputs:
+      - type: log
+        enabled: true
+        paths:
+          - /var/log/kubernetes/audit/*.log
+        json.keys_under_root: false
+        json.add_error_key: true
+        fields:
+          log_type: "k8s_audit"
+        fields_under_root: true
+
+    processors:
+      - add_host_metadata: ~
+      - add_cloud_metadata: ~
+
+    output.logstash:
+      hosts: ["logstash-logstash:5044"]
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "100Mi"
+  limits:
+    cpu: "250m"
+    memory: "200Mi"

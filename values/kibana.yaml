@@ -1,0 +1,54 @@
+# =============================================================================
+# Kibana Helm Chart Configuration (values/kibana.yaml)
+# Chart: elastic/kibana
+# =============================================================================
+
+elasticsearchHosts: "http://elasticsearch-master:9200"
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1Gi"
+  limits:
+    cpu: "500m"
+    memory: "1Gi"
+
+service:
+  type: ClusterIP
+  port: 5601
+
+# Ingress for secure administrative access
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: "kibana.k8s.musaxasmammedov.dev"
+      paths:
+        - path: /
+  tls:
+    - secretName: kibana-tls
+      hosts:
+        - "kibana.k8s.musaxasmammedov.dev"
+
+# Security & environment settings
+kibanaConfig:
+  kibana.yml: |
+    server.basePath: ""
+    server.rewriteBasePath: false
+    telemetry.enabled: false
+    monitoring.ui.container.elasticsearch.enabled: true
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  runAsNonRoot: true
+  runAsUser: 1000
